@@ -99,15 +99,13 @@ def print_sections(sections):
         print("----------------------------------------")
 
 def print_instruction(instruction):
-    print("0x{:x}: {} {}".format(   instruction.address,
-                                    instruction.mnemonic,
-                                    instruction.op_str))
+    print("0x{:x}: {} {}".format(   instruction['address'], 
+                                    instruction['mnemonic'], 
+                                    instruction['op_str']))
 
 def print_instructions(instructions):
     for i in instructions:
-        print("0x{:x}: {} {}".format(   i['address'], 
-                                        i['mnemonic'], 
-                                        i['op_str']))
+        print_instruction(i)
 
 def print_symbols(symbols):
     for symbol in symbols:
@@ -313,7 +311,13 @@ def x86_64_file_get_instructions(   file_path,
                 # did not reached the end of the buffer (make sure
                 # buffer didnt cut the instruction)
                 if size_left != i.size:
-                    yield i
+                    instruction = { 'address': i.address,
+                                    'mnemonic': i.mnemonic,
+                                    'op_str': i.op_str,
+                                    'bytes': str(b64encode(i.bytes)),
+                                    'size': i.size}
+                    yield instruction
+
                     num_of_passed_instructions += 1
                     if num_of_instructions != -1:
                         if num_of_passed_instructions == num_of_instructions:
@@ -347,9 +351,9 @@ def main():
 
     # print(file_details)
 
-    # code_section = [s for s in file_details["sections"] if s["name"] == ".text"][0]
-    # code_address = code_section["address"]
-    # code_size = code_section["size"]
+    code_section = [s for s in file_details["sections"] if s["name"] == ".text"][0]
+    code_address = code_section["address"]
+    code_size = code_section["size"]
 
     # code_address = file_details["entrypoint"]
     # code_size = 1000
@@ -377,11 +381,10 @@ def main():
 
 
     # for instruction in x86_64_file_get_instructions(    file_path, 
-                                                        # num_of_instructions=10,
-                                                        # start_address=100,
+                                                        # num_of_instructions=50,
+                                                        # start_address=code_address,
                                                         # end_address=-1,
                                                         # buffering=1024):
-
         # print_instruction(instruction)
 
 if __name__ == '__main__':
