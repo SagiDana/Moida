@@ -82,7 +82,6 @@ def file_get_bytes( file_path,
     except Exception as e:
         print("Exception: {}".format(e))
 
-
 # -----------------------------------------------------
 # Printers
 # -----------------------------------------------------
@@ -253,6 +252,7 @@ def pe_extract_details(path):
 # -----------------------------------------------------
 from base64 import b64encode
 from capstone import *
+import re
 
 def x86_64_disassemble(code_as_bytes, start_address):
     md = Cs(CS_ARCH_X86, CS_MODE_64)
@@ -274,7 +274,6 @@ def x86_64_disassemble(code_as_bytes, start_address):
     except Exception as e:
         print("Exception: {}".format(e))
         return None
-
 
 # file_get_instructions retrieving 1 instructions at a time
 def x86_64_file_get_instructions(   file_path, 
@@ -337,12 +336,78 @@ def x86_64_file_get_instructions(   file_path,
         print("Exception: {}".format(e))
         return None
 
+def x86_64_instruction_get_ref(instruction):
+    address = instruction['address']
+    mnemonic = instruction['mnemonic']
+    op_str = instruction['op_str']
+    size = instruction['size']
+    ref_address = None
+
+    # if call instruction follow call.
+    if mnemonic == 'call':
+        if re.match(r'0x[0-9A-Fa-f]+', op_str):
+            ref_address = op_str
+            ref_address = int(ref_address[0], 0)
+
+    # if lea instruction follow ref.
+    elif mnemonic == 'lea':
+        if re.match(r'.*rip \+ 0x[0-9A-Fa-f]+.*', op_str):
+            ref_address = re.findall(r'0x[0-9A-F]+', op_str, re.I)
+            if len(ref_address) != 1: return None
+            ref_address = int(ref_address[0], 0)
+
+            current_address = address
+            rip = current_address + size
+            ref_address = rip + ref_address
+
+    return ref_address
+
+def x86_64_analyze_function(file_path, start_address, level=0):
+    num_of_instructions = 0
+    num_of_nops = 0
+    num_of_wierd_nops = 0
+    is_ret = False
+    current_address = start_address
+
+    print(("\t"*level)+("-"*10))
+    for instruction in x86_64_file_get_instructions(    file_path, 
+                                                        num_of_instructions=-1,
+                                                        start_address=start_address,
+                                                        end_address=-1,
+                                                        buffering=1024):
+
+        print_instruction(instruction)
+        ref_address = x86_64_instruction_get_ref(instruction)
+        if ref_address:
+            x86_64_analyze_function(file_path, ref_address, level+1)
+
+        address = instruction['address']
+        mnemonic = instruction['mnemonic']
+        op_str = instruction['op_str']
+                
+        if mnemonic == 'nop': num_of_nops += 1
+        if mnemonic == 'nop' and op_str != '': num_of_wierd_nops += 1
+
+
+        num_of_instructions += 1
+        current_address += instruction["size"]
+        if mnemonic == 'ret': 
+            is_ret = True
+            break        
+
+        if num_of_instructions > 100:
+            break
+
+
+    print(("\t"*level)+("-"*10))
+
+
 # -----------------------------------------------------
 
 def main():
     # elf
-    # file_path = "files/js60"
-    file_path = "files/ls"
+    file_path = "files/js60"
+    # file_path = "files/ls"
     file_details = elf_extract_details(file_path)
 
     # pe
@@ -351,12 +416,12 @@ def main():
 
     # print(file_details)
 
-    code_section = [s for s in file_details["sections"] if s["name"] == ".text"][0]
-    code_address = code_section["address"]
-    code_size = code_section["size"]
+    # code_section = [s for s in file_details["sections"] if s["name"] == ".text"][0]
+    # code_address = code_section["address"]
+    # code_size = code_section["size"]
 
-    # code_address = file_details["entrypoint"]
-    # code_size = 1000
+    code_address = file_details["entrypoint"]
+    code_size = 1000
 
     # code = read_bytes_from_file(file_path, code_address, code_size)
 
@@ -379,11 +444,12 @@ def main():
                                 # buffering=1024):
         # print("data: {}".format(data))
 
+    x86_64_analyze_function(file_path, file_details["entrypoint"])
 
     # for instruction in x86_64_file_get_instructions(    file_path, 
-                                                        # num_of_instructions=50,
+                                                        # num_of_instructions=-1,
                                                         # start_address=code_address,
-                                                        # end_address=-1,
+                                                        # end_address=code_address + code_size,
                                                         # buffering=1024):
         # print_instruction(instruction)
 
