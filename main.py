@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 # -----------------------------------------------------
 # General functions to do common tasks.
 # -----------------------------------------------------
@@ -93,14 +94,14 @@ def print_sections(sections):
     print("----------------------------------------")
     for section in sections:
         print("Name: {}".format(section["name"]))
-        print("Address: {}".format(section["address"]))
+        print("Address: {}".format(hex(section["address"])))
         print("Size: {}".format(section["size"]))
         print("----------------------------------------")
 
-def print_instruction(instruction):
-    print("0x{:x}: {} {}".format(   instruction['address'], 
-                                    instruction['mnemonic'], 
-                                    instruction['op_str']))
+def print_instruction(instruction, level=0):
+    print("\t"*level + "0x{:x}: {} {}".format(  instruction['address'], 
+                                                instruction['mnemonic'], 
+                                                instruction['op_str']))
 
 def print_instructions(instructions):
     for i in instructions:
@@ -162,33 +163,41 @@ def elf_extract_details(path):
             # extracting the symbols
             elf_details["symbols"] = []
             for section in elf.iter_sections():
+                if not isinstance(section, SymbolTableSection): continue
 
-                # only relocations are interesting for this one.
-                if not isinstance(section, RelocationSection):
-                    continue
-                
-                symbols_section = elf.get_section(section["sh_link"])
-                for relocation in section.iter_relocations():
-                    symbol = symbols_section.get_symbol(relocation["r_info_sym"])
-                    symbol_address = relocation['r_offset']
-                    symbol_address = symbol_address
-
-                    # ignore symbols with no name for now...
-                    if symbol.name == "":
-                        continue
+                for symbol in section.iter_symbols():
+                    if symbol.name == "": continue
+                    symbol_address = symbol.entry['st_value']
 
                     elf_details["symbols"].append({
                         'address': symbol_address,
                         'name': symbol.name
                     })
 
+                # # only relocations are interesting for this one.
+                # if not isinstance(section, RelocationSection):
+                    # continue
+                
+                # symbols_section = elf.get_section(section["sh_link"])
+                # for relocation in section.iter_relocations():
+                    # symbol = symbols_section.get_symbol(relocation["r_info_sym"])
+                    # symbol_address = relocation['r_offset']
+                    # symbol_address = symbol_address
+
+                    # # ignore symbols with no name for now...
+                    # if symbol.name == "":
+                        # continue
+
+                    # elf_details["symbols"].append({
+                        # 'address': symbol_address,
+                        # 'name': symbol.name
+                    # })
+
     except Exception as e:
         return None
 
     return elf_details
 # -----------------------------------------------------
-
-
 
 # -----------------------------------------------------
 # PE
@@ -242,8 +251,6 @@ def pe_extract_details(path):
     return pe_details
 
 # -----------------------------------------------------
-
-
 
 # -----------------------------------------------------
 # Language Analyzers
@@ -376,10 +383,10 @@ def x86_64_analyze_function(file_path, start_address, level=0):
                                                         end_address=-1,
                                                         buffering=1024):
 
-        print_instruction(instruction)
+        print_instruction(instruction, level)
         ref_address = x86_64_instruction_get_ref(instruction)
-        if ref_address:
-            x86_64_analyze_function(file_path, ref_address, level+1)
+        # if ref_address:
+            # x86_64_analyze_function(file_path, ref_address, level+1)
 
         address = instruction['address']
         mnemonic = instruction['mnemonic']
@@ -403,12 +410,102 @@ def x86_64_analyze_function(file_path, start_address, level=0):
 
 
 # -----------------------------------------------------
+from vimapp import Vimapp
+import vimable
+import json
+
+commands = {}
+completer = {}
+file_details = None
+settings = {}
+settings["file_path"] = "/home/s/github/Promody/tracee/tracee"
+settings["base_addr"] = None
+
+def print_sections_handler(vapp, commands):
+    global file_details
+
+    print_sections(file_details["sections"])
+
+    return True
+
+def print_symbols_handler(vapp, commands):
+    global file_details
+
+    print_symbols(file_details["symbols"])
+
+    return True
+
+def set_file_path_handler(vapp, commands):
+    global settings, file_details
+
+    settings["file_path"] = commands[2]
+    file_details = elf_extract_details(settings["file_path"])
+
+    return True
+
+def set_base_addr_handler(vapp, commands):
+    global settings
+
+    settings["base_addr"] = int(commands[2], base=16)
+
+    return True
+
+def get_settings_handler(vapp, commands):
+    global settings
+
+    print(f"{json.dumps(settings, indent=4)}")
+
+    return True
+
+def disassemble_function_handler(vapp, commands):
+    global completer
+    # completer['disassemble']['function'] = {}
+    # completer['disassemble']['function']['a'] = None
+    # completer['disassemble']['function']['b'] = None
+
+    return True
 
 def main():
-    # elf
-    file_path = "files/js60"
-    # file_path = "files/ls"
-    file_details = elf_extract_details(file_path)
+    global settings, file_details, commands, completer
+
+    try:
+        vimable.start("moi")
+
+        # init
+        file_details = elf_extract_details(settings['file_path'])
+        completer['disassemble'] = {}
+        completer['disassemble']['function'] = None
+
+        # export variables
+        vimable.export("settings", settings)
+        vimable.export("file_details", file_details)
+        # export functions
+        vimable.export("print_symbols", print_symbols)
+        vimable.export("print_sections", print_symbols)
+
+        commands["print"] = {}
+        commands["print"]["sections"] = print_sections_handler
+        commands["print"]["symbols"] = print_symbols_handler
+        
+        commands["set"] = {}
+        commands["set"]["file_path"] = set_file_path_handler
+        commands["set"]["base_addr"] = set_base_addr_handler
+
+        commands["get"] = {}
+        commands["get"]["settings"] = get_settings_handler
+
+        commands["disassemble"] = {}
+        commands["disassemble"]["function"] = disassemble_function_handler
+
+        vapp = Vimapp("moi", commands, completer)
+        vapp.run()
+
+    finally:
+        vimable.stop()
+    
+    # # elf
+    # # file_path = "files/ls"
+    # file_details = elf_extract_details(file_path)
 
     # pe
     # file_path = "files/disk2vhd.exe"
@@ -420,8 +517,9 @@ def main():
     # code_address = code_section["address"]
     # code_size = code_section["size"]
 
-    code_address = file_details["entrypoint"]
-    code_size = 1000
+
+    # code_address = file_details["entrypoint"]
+    # code_size = 1000
 
     # code = read_bytes_from_file(file_path, code_address, code_size)
 
@@ -444,7 +542,7 @@ def main():
                                 # buffering=1024):
         # print("data: {}".format(data))
 
-    x86_64_analyze_function(file_path, file_details["entrypoint"])
+    # x86_64_analyze_function(file_path, file_details["entrypoint"])
 
     # for instruction in x86_64_file_get_instructions(    file_path, 
                                                         # num_of_instructions=-1,
@@ -455,3 +553,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
