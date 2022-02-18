@@ -24,6 +24,7 @@ def get_section_by_name(sections, name):
 def get_section_data(file_path, section):
     return read_bytes_from_file(file_path, section["address"], section["size"])
 
+
 # -----------------------------------------------------
 # some cross file functions, like cross references
 # and searches that require scanning the entire file.
@@ -99,9 +100,10 @@ def print_sections(sections):
         print("----------------------------------------")
 
 def print_instruction(instruction, level=0):
-    print("\t"*level + "0x{:x}: {} {}".format(  instruction['address'], 
-                                                instruction['mnemonic'], 
-                                                instruction['op_str']))
+    print("\t"*level + "0x{:x}: {}\t{} {}".format(  instruction['address'], 
+                                                    b64decode(instruction['bytes']).hex(),
+                                                    instruction['mnemonic'], 
+                                                    instruction['op_str']))
 
 def print_instructions(instructions):
     for i in instructions:
@@ -255,9 +257,9 @@ def pe_extract_details(path):
 # -----------------------------------------------------
 # Language Analyzers
 # -----------------------------------------------------
-# - X86_64 assembly language only for now.
+# - X86_64 assembly language
 # -----------------------------------------------------
-from base64 import b64encode
+from base64 import b64encode, b64decode
 from capstone import *
 import re
 
@@ -297,45 +299,43 @@ def x86_64_file_get_instructions(   file_path,
     num_of_passed_instructions = 0
     is_finished = False
     try:
-        at_a_time = 64
-        size_left = 0
+        at_a_time = 64 # buffering must be a multiplication of that.
         data_from_last_iteration = None
         for code_as_bytes in file_get_bytes(file_path, 
                                             start_address=start_address,
                                             end_address=end_address,
                                             at_a_time=at_a_time,
                                             buffering=buffering):
-
-            size_left += at_a_time
-            size_of_curr_buff = size_left
-
-            if data_from_last_iteration and len(data_from_last_iteration) > 0:
+            if data_from_last_iteration:
                 code_as_bytes = data_from_last_iteration + code_as_bytes
+                data_from_last_iteration = None
+
+            size_left = len(code_as_bytes)
 
             for i in md.disasm(code_as_bytes, current_address, 0):
                 # only return the instruction in case the size of it
                 # did not reached the end of the buffer (make sure
                 # buffer didnt cut the instruction)
-                if size_left != i.size:
-                    instruction = { 'address': i.address,
-                                    'mnemonic': i.mnemonic,
-                                    'op_str': i.op_str,
-                                    'bytes': str(b64encode(i.bytes)),
-                                    'size': i.size}
-                    yield instruction
+                if size_left <= 15: # x86_64 instruction max length
+                    data_from_last_iteration = code_as_bytes[-size_left:]
+                    break
 
-                    num_of_passed_instructions += 1
-                    if num_of_instructions != -1:
-                        if num_of_passed_instructions == num_of_instructions:
-                            is_finished = True
-                            break
+                instruction = { 'address': i.address,
+                                'mnemonic': i.mnemonic,
+                                'op_str': i.op_str,
+                                'bytes': b64encode(i.bytes),
+                                'size': i.size}
+                yield instruction
 
-                    current_address += i.size
+                num_of_passed_instructions += 1
+                if num_of_instructions != -1:
+                    if num_of_passed_instructions == num_of_instructions:
+                        is_finished = True
+                        break
 
-                    # increase the address
-                    size_left -= i.size
-                else:
-                    data_from_last_iteration = code_as_bytes[size_of_curr_buff - size_left:]
+                # increase the address
+                current_address += i.size
+                size_left -= i.size
 
             if is_finished: break
 
@@ -408,6 +408,20 @@ def x86_64_analyze_function(file_path, start_address, level=0):
 
     print(("\t"*level)+("-"*10))
 
+# -----------------------------------------------------
+# Generic
+# -----------------------------------------------------
+def file_get_instructions(  file_path,
+                            start_address=0,
+                            num_of_instructions=-1,
+                            end_address=-1,
+                            buffering=1024):
+
+    return x86_64_file_get_instructions(    file_path,
+                                            start_address,
+                                            num_of_instructions,
+                                            end_address,
+                                            buffering)
 
 # -----------------------------------------------------
 from vimapp import Vimapp
@@ -416,30 +430,30 @@ import json
 
 commands = {}
 completer = {}
-file_details = None
+elf = None
 settings = {}
 settings["file_path"] = "/home/s/github/Promody/tracee/tracee"
 settings["base_addr"] = None
 
 def print_sections_handler(vapp, commands):
-    global file_details
+    global elf
 
-    print_sections(file_details["sections"])
+    print_sections(elf["sections"])
 
     return True
 
 def print_symbols_handler(vapp, commands):
-    global file_details
+    global elf
 
-    print_symbols(file_details["symbols"])
+    print_symbols(elf["symbols"])
 
     return True
 
 def set_file_path_handler(vapp, commands):
-    global settings, file_details
+    global settings, elf
 
     settings["file_path"] = commands[2]
-    file_details = elf_extract_details(settings["file_path"])
+    elf = elf_extract_details(settings["file_path"])
 
     return True
 
@@ -465,23 +479,45 @@ def disassemble_function_handler(vapp, commands):
 
     return True
 
+def translate_address(addr):
+    global settings
+    if not settings['base_addr']: return None
+    return addr + settings['base_addr']
+
+def init():
+    global settings, elf
+    elf = elf_extract_details(settings['file_path'])
+
+def exports():
+    global settings, elf
+
+    # export variables
+    vimable.export("settings", settings)
+    vimable.export("elf", elf)
+
+    # export functions
+    vimable.export("init", init)
+
+    vimable.export("print_symbols", print_symbols)
+    vimable.export("print_sections", print_sections)
+    vimable.export("print_instruction", print_instruction)
+    vimable.export("print_instructions", print_instructions)
+
+    vimable.export("analyze_function", x86_64_analyze_function)
+    vimable.export("file_get_instructions", file_get_instructions)
+
+
 def main():
-    global settings, file_details, commands, completer
+    global settings, elf, commands, completer
 
     try:
         vimable.start("moi")
 
-        # init
-        file_details = elf_extract_details(settings['file_path'])
+        init()
+        exports()
+
         completer['disassemble'] = {}
         completer['disassemble']['function'] = None
-
-        # export variables
-        vimable.export("settings", settings)
-        vimable.export("file_details", file_details)
-        # export functions
-        vimable.export("print_symbols", print_symbols)
-        vimable.export("print_sections", print_symbols)
 
         commands["print"] = {}
         commands["print"]["sections"] = print_sections_handler
@@ -496,6 +532,7 @@ def main():
 
         commands["disassemble"] = {}
         commands["disassemble"]["function"] = disassemble_function_handler
+        # commands["disassemble"]["addr"] = 
 
         vapp = Vimapp("moi", commands, completer)
         vapp.run()
