@@ -109,6 +109,24 @@ def elf_init(path):
     return elf_details
 # -----------------------------------------------------
 
+def _print_instruction(instruction, level=0):
+    # print("\t"*level + "0x{:x}: {}\t{} {}".format(  instruction['address'], 
+                                                    # instruction['bytes'].hex(),
+                                                    # instruction['mnemonic'], 
+                                                    # instruction['op_str']))
+    addr = instruction['address']
+    _bytes = instruction['bytes']
+    mnemonic = instruction['mnemonic']
+    op = instruction['op_str']
+
+    comment = ""
+    if instruction['ref']: 
+        ref = f"{hex(instruction['ref'])}"
+        comment = f"; {ref}"
+
+    level = '\t'*level
+    print(f"{level}{hex(addr)}: {mnemonic} {op} {comment}")
+
 # -----------------------------------------------------
 # NOTE
 # the .got table is where the linker is going to replace the content with the
@@ -135,29 +153,19 @@ def elf_init(path):
 # -----------------------------------------------------
 def create_plt_symbols(elf):
     # search in all plt sections
-    plts = __find_section(elf, '.plt', exactly=False)
-    if len(plts) == 0: return
+    for plt in __find_section(elf, '.plt', exactly=False):
+        start = plt['address']
+        end = start + plt['size']
+        size_of_entry = 16
 
-    got = __find_section(elf, '.got')
-    if len(got) == 0: return
-    else: got = got[0]
+        for i in range(start, end, size_of_entry):
+            for ins in file_get_instructions(   elf,
+                                                start=i,
+                                                end=i+size_of_entry):
+                if not ins['ref']: continue
 
-    got_start = got['address']
-    got_end = got_start + got['size']
+                relocation = __find_relocation_by_address(elf, ins['ref'])
+                if not relocation: continue
 
-    for plt in plts:
-        plt_start = plt['address']
-        plt_end = plt_start + plt['size']
-        for i in file_get_instructions( elf['path'],
-                                        start_address=plt_start,
-                                        end_address=plt_end):
-            # skip if instruction does not trying to reference the got table
-            if not i['ref']: continue
-            if not (got_start <= i['ref'] <= got_end): continue
-
-            address = i['ref']
-            relocation = __find_relocation_by_address(elf, address)
-            if not relocation: continue
-
-            name = f"plt@{relocation['name']}"
-            elf['symbols'].append({ 'name': name, 'address': address })
+                name = f"{relocation['name']}@plt"
+                elf['symbols'].append({ 'name': name, 'address': i})

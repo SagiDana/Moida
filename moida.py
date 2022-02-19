@@ -23,22 +23,24 @@ def print_relocations(binary):
         print("{}:\t 0x{:x}".format(reloc["name"], reloc["address"]))
 
 def print_instruction(instruction, level=0):
-    # print("\t"*level + "0x{:x}: {}\t{} {}".format(  instruction['address'], 
-                                                    # instruction['bytes'].hex(),
-                                                    # instruction['mnemonic'], 
-                                                    # instruction['op_str']))
+    global binary_map
+
     addr = instruction['address']
     _bytes = instruction['bytes']
     mnemonic = instruction['mnemonic']
     op = instruction['op_str']
-
-    comment = ""
-    if instruction['ref']: 
-        ref = f"{hex(instruction['ref'])}"
-        comment = f"; {ref}"
-
     level = '\t'*level
-    print(f"{level}{hex(addr)}: {mnemonic} {op} {comment}")
+
+    if not instruction['ref']: 
+        print(f"{level}{hex(addr)}: {mnemonic} {op}")
+        return
+
+    ref = instruction['ref']
+    if ref not in binary_map:
+        print(f"{level}{hex(addr)}: {mnemonic} {op} ; {hex(ref)}")
+        return 
+
+    print(f"{level}{hex(addr)}: {mnemonic} {op} ; {binary_map[ref]}")
 
 def print_instructions(instructions):
     for i in instructions:
@@ -50,13 +52,15 @@ from disasm import *
 from binary import *
 from common import *
 
-
 from vimapp import Vimapp
 import vimable
 import json
 
+
 commands = {}
 completer = {}
+
+binary_map = {}
 binary = None
 settings = {}
 settings["file_path"] = "/home/s/github/Promody/tracee/tracee"
@@ -102,14 +106,13 @@ def disassemble_function_handler(vapp, commands):
 
     return True
 
-def translate_address(addr):
-    global settings
-    if not settings['base_addr']: return None
-    return addr + settings['base_addr']
-
 def init():
-    global settings, binary
+    global settings, binary, binary_map
     binary = binary_init(settings['file_path'])
+
+    for symbol in binary['symbols']:
+        binary_map[symbol['address']] = symbol['name']
+
 
 def exports():
     global settings, binary
@@ -121,6 +124,7 @@ def exports():
     # # export functions
     vimable.export("init", init)
 
+    # prints
     vimable.export("hexdump", hexdump)
     vimable.export("print_symbols", print_symbols)
     vimable.export("print_relocations", print_relocations)
@@ -128,10 +132,20 @@ def exports():
     vimable.export("print_instruction", print_instruction)
     vimable.export("print_instructions", print_instructions)
 
+    # binary
+    vimable.export("find_section", find_section)
+    vimable.export("get_section_data", get_section_data)
+    vimable.export("find_symbol_by_address", find_symbol_by_address)
+    vimable.export("find_relocation_by_address", find_relocation_by_address)
+
+    # disasm
     vimable.export("get_cross_refs", get_cross_refs)
     vimable.export("file_get_instructions", file_get_instructions)
-    vimable.export("file_get_bytes", file_get_bytes)
 
+    # common
+    vimable.export("file_get_bytes", file_get_bytes)
+    vimable.export("file_strings", file_strings)
+    vimable.export("file_hexdump", file_hexdump)
 
 def main():
     global settings, binary, commands, completer
@@ -164,54 +178,6 @@ def main():
 
     finally:
         vimable.stop()
-    
-    # # binary
-    # # file_path = "files/ls"
-    # file_details = binary_extract_details(file_path)
-
-    # pe
-    # file_path = "files/disk2vhd.exe"
-    # file_details = pe_extract_details(file_path)
-
-    # print(file_details)
-
-    # code_section = [s for s in file_details["sections"] if s["name"] == ".text"][0]
-    # code_address = code_section["address"]
-    # code_size = code_section["size"]
-
-
-    # code_address = file_details["entrypoint"]
-    # code_size = 1000
-
-    # code = read_bytes_from_file(file_path, code_address, code_size)
-
-    # instructions = x86_64_disassemble(code, code_address)
-    # print_instructions(instructions)
-    
-    # file_symbols = file_details["symbols"]
-    # print_symbols(file_symbols)
-
-    # print_sections(file_details["sections"])
-    
-    # section = get_section_by_name(file_details["sections"], "data")
-    # data = get_section_data(file_path, section)
-    # hexdump(data)
-
-    # for data in file_get_bytes(file_path, 
-                                # start_address=0, 
-                                # end_address=-1, 
-                                # at_a_time=1,
-                                # buffering=1024):
-        # print("data: {}".format(data))
-
-    # x86_64_analyze_function(file_path, file_details["entrypoint"])
-
-    # for instruction in x86_64_file_get_instructions(    file_path, 
-                                                        # num_of_instructions=-1,
-                                                        # start_address=code_address,
-                                                        # end_address=code_address + code_size,
-                                                        # buffering=1024):
-        # print_instruction(instruction)
 
 if __name__ == '__main__':
     main()

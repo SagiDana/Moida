@@ -68,3 +68,32 @@ def _file_get_bytes( file_path,
 
     except Exception as e:
         print("Exception: {}".format(e))
+
+from hexdump import hexdump
+def file_hexdump(file_path, address, size):
+    b = file_get_bytes(file_path, address, size)
+    hexdump(b)
+
+def file_strings(file_path):
+    curr = ""
+    address = 0
+    for b in _file_get_bytes(   file_path,
+                                at_a_time=1):
+        address += 1
+        num = int.from_bytes(   b, 
+                                byteorder='little',
+                                signed=True)
+        if 32 <= num <= 126:
+            curr += chr(num)
+            continue
+
+        if len(curr) == 0: continue
+
+        yield {'string': curr, 'address': address-1}
+        curr = ""
+
+
+
+
+
+

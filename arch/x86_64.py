@@ -54,16 +54,23 @@ def x86_64_file_get_instructions(   file_path,
                 yield instruction
 
                 num_of_passed_instructions += 1
-                if num_of_instructions != -1:
-                    if num_of_passed_instructions == num_of_instructions:
-                        is_finished = True
-                        break
+                if num_of_passed_instructions == num_of_instructions: return None
 
                 # increase the address
                 current_address += i.size
                 size_left -= i.size
+        # finish the rest...
+        if data_from_last_iteration:
+            for i in md.disasm(data_from_last_iteration, current_address, 0):
+                instruction = { 'address': i.address,
+                                'mnemonic': i.mnemonic,
+                                'op_str': i.op_str,
+                                'bytes': i.bytes,
+                                'size': i.size,
+                                'ref': None }
+                instruction['ref'] = x86_64_instruction_get_ref(instruction)
+                yield instruction
 
-            if is_finished: break
 
     except Exception as e:
         print("Exception: {}".format(e))

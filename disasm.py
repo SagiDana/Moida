@@ -9,21 +9,21 @@ from arch.x86_64 import *
         # 'size': <int>,
         # 'ref': <int>,
 # }
-def file_get_instructions(  file_path,
-                            start_address=0,
-                            num_of_instructions=-1,
-                            end_address=-1,
+def file_get_instructions(  binary,
+                            start=0,
+                            num_ins=-1,
+                            end=-1,
                             buffering=1024):
 
-    return x86_64_file_get_instructions(    file_path,
-                                            start_address,
-                                            num_of_instructions,
-                                            end_address,
+    return x86_64_file_get_instructions(    binary['path'],
+                                            start,
+                                            num_ins,
+                                            end,
                                             buffering)
 
-def get_cross_refs(elf, address):
+def get_cross_refs(binary, address):
     refs = []
-    for i in file_get_instructions(elf['path']):
+    for i in file_get_instructions(binary):
         if i['ref'] != address: continue
         refs.append(i['address'])
         
