@@ -3,7 +3,7 @@
 # General functions to do common tasks.
 # -----------------------------------------------------
 
-def read_bytes_from_file(file_path, offset, size):
+def file_get_bytes(file_path, offset, size):
     try:
         ret = None
         with open(file_path, 'rb') as f:
@@ -32,7 +32,7 @@ def get_section_data(file_path, section):
 # is scalable and optimized to large files.
 # -----------------------------------------------------
 # file_get_bytes retreiving n bytes at a time.
-def file_get_bytes( file_path, 
+def _file_get_bytes( file_path, 
                     start_address=0, 
                     end_address=-1, 
                     at_a_time=8, 
@@ -91,29 +91,224 @@ def file_get_bytes( file_path,
 # hexdump is always usefull :)
 from hexdump import hexdump
 
-def print_sections(sections):
+def print_sections(elf):
     print("----------------------------------------")
-    for section in sections:
+    for section in elf['sections']:
         print("Name: {}".format(section["name"]))
         print("Address: {}".format(hex(section["address"])))
         print("Size: {}".format(section["size"]))
         print("----------------------------------------")
 
+def print_symbols(elf):
+    for symbol in elf['symbols']:
+        print("{}:\t 0x{:x}".format(symbol["name"], symbol["address"]))
+
+def print_relocations(elf):
+    for reloc in elf['relocations']:
+        print("{}:\t 0x{:x}".format(reloc["name"], reloc["address"]))
+
 def print_instruction(instruction, level=0):
-    print("\t"*level + "0x{:x}: {}\t{} {}".format(  instruction['address'], 
-                                                    b64decode(instruction['bytes']).hex(),
-                                                    instruction['mnemonic'], 
-                                                    instruction['op_str']))
+    # print("\t"*level + "0x{:x}: {}\t{} {}".format(  instruction['address'], 
+                                                    # instruction['bytes'].hex(),
+                                                    # instruction['mnemonic'], 
+                                                    # instruction['op_str']))
+    addr = instruction['address']
+    _bytes = instruction['bytes']
+    mnemonic = instruction['mnemonic']
+    op = instruction['op_str']
+
+    comment = ""
+    if instruction['ref']: 
+        ref = f"{hex(instruction['ref'])}"
+        comment = f"; {ref}"
+
+    level = '\t'*level
+    print(f"{level}{hex(addr)}: {mnemonic} {op} {comment}")
 
 def print_instructions(instructions):
     for i in instructions:
         print_instruction(i)
 
-def print_symbols(symbols):
-    for symbol in symbols:
-        print("{}:\t 0x{:x}".format(symbol["name"], symbol["address"]))
+# -----------------------------------------------------
 
 # -----------------------------------------------------
+# Language Analyzers
+# -----------------------------------------------------
+# - X86_64 assembly language
+# -----------------------------------------------------
+# from base64 import b64encode, b64decode
+from capstone import *
+import re
+
+def x86_64_disassemble(code_as_bytes, start_address):
+    md = Cs(CS_ARCH_X86, CS_MODE_64)
+    
+    # Auto-skip errors in assembly
+    md.skipdata = True
+
+    try:
+        instructions = []
+        for i in md.disasm(code_as_bytes, start_address, 0):
+            instructions.append({
+                    'address': i.address,
+                    'mnemonic': i.mnemonic,
+                    'op_str': i.op_str,
+                    'bytes': str(b64encode(i.bytes)),
+                    'size': i.size
+                    })
+        return instructions
+    except Exception as e:
+        print("Exception: {}".format(e))
+        return None
+
+# file_get_instructions retrieving 1 instructions at a time
+def x86_64_file_get_instructions(   file_path, 
+                                    start_address=0, 
+                                    num_of_instructions=-1, 
+                                    end_address=-1, 
+                                    buffering=1024):
+    md = Cs(CS_ARCH_X86, CS_MODE_64)
+    
+    # Auto-skip errors in assembly
+    md.skipdata = True
+
+    current_address = start_address
+    num_of_passed_instructions = 0
+    is_finished = False
+    try:
+        at_a_time = 64 # buffering must be a multiplication of that.
+        data_from_last_iteration = None
+        for code_as_bytes in _file_get_bytes(file_path, 
+                                            start_address=start_address,
+                                            end_address=end_address,
+                                            at_a_time=at_a_time,
+                                            buffering=buffering):
+            if data_from_last_iteration:
+                code_as_bytes = data_from_last_iteration + code_as_bytes
+                data_from_last_iteration = None
+
+            size_left = len(code_as_bytes)
+
+            for i in md.disasm(code_as_bytes, current_address, 0):
+                # only return the instruction in case the size of it
+                # did not reached the end of the buffer (make sure
+                # buffer didnt cut the instruction)
+                if size_left <= 15: # x86_64 instruction max length
+                    data_from_last_iteration = code_as_bytes[-size_left:]
+                    break
+
+                instruction = { 'address': i.address,
+                                'mnemonic': i.mnemonic,
+                                'op_str': i.op_str,
+                                'bytes': i.bytes,
+                                'size': i.size,
+                                'ref': None }
+                instruction['ref'] = x86_64_instruction_get_ref(instruction)
+                yield instruction
+
+                num_of_passed_instructions += 1
+                if num_of_instructions != -1:
+                    if num_of_passed_instructions == num_of_instructions:
+                        is_finished = True
+                        break
+
+                # increase the address
+                current_address += i.size
+                size_left -= i.size
+
+            if is_finished: break
+
+    except Exception as e:
+        print("Exception: {}".format(e))
+        return None
+
+def x86_64_instruction_get_ref(instruction):
+    address = instruction['address']
+    mnemonic = instruction['mnemonic']
+    op_str = instruction['op_str']
+    size = instruction['size']
+    ref_address = None
+
+    # if instruction ref relative to to current
+    if re.match(r'.*rip \+ 0x[0-9A-Fa-f]+.*', op_str):
+        ref_address = re.findall(r'0x[0-9A-F]+', op_str, re.I)[0]
+        ref_address = int(ref_address, 0)
+        rip = address + size
+        ref_address = rip + ref_address
+    elif re.match(r'.*rip \- 0x[0-9A-Fa-f]+.*', op_str):
+        ref_address = re.findall(r'0x[0-9A-F]+', op_str, re.I)[0]
+        ref_address = int(ref_address, 0)
+        rip = address + size
+        ref_address = rip - ref_address
+    # if instruction absolute
+    elif re.match(r'0x[0-9A-Fa-f]+', op_str):
+        ref_address = re.findall(r'0x[0-9A-F]+', op_str, re.I)[0]
+        ref_address = int(ref_address, 0)
+    return ref_address
+
+def x86_64_analyze_function(file_path, start_address, level=0):
+    num_of_instructions = 0
+    num_of_nops = 0
+    num_of_wierd_nops = 0
+    is_ret = False
+    current_address = start_address
+
+    print(("\t"*level)+("-"*10))
+    for instruction in x86_64_file_get_instructions(    file_path, 
+                                                        num_of_instructions=-1,
+                                                        start_address=start_address,
+                                                        end_address=-1,
+                                                        buffering=1024):
+
+        print_instruction(instruction, level)
+        ref_address = x86_64_instruction_get_ref(instruction)
+        # if ref_address:
+            # x86_64_analyze_function(file_path, ref_address, level+1)
+
+        address = instruction['address']
+        mnemonic = instruction['mnemonic']
+        op_str = instruction['op_str']
+                
+        if mnemonic == 'nop': num_of_nops += 1
+        if mnemonic == 'nop' and op_str != '': num_of_wierd_nops += 1
+
+
+        num_of_instructions += 1
+        current_address += instruction["size"]
+        if mnemonic == 'ret': 
+            is_ret = True
+            break        
+
+        if num_of_instructions > 100:
+            break
+
+
+    print(("\t"*level)+("-"*10))
+
+# -----------------------------------------------------
+# Generic
+# -----------------------------------------------------
+
+# Instruction structure
+# { 
+        # 'address': <int>,
+        # 'mnemonic': <str>,
+        # 'op_str': <str>,
+        # 'bytes': <bytes>,
+        # 'size': <int>,
+        # 'ref': <int>,
+# }
+def file_get_instructions(  file_path,
+                            start_address=0,
+                            num_of_instructions=-1,
+                            end_address=-1,
+                            buffering=1024):
+
+    return x86_64_file_get_instructions(    file_path,
+                                            start_address,
+                                            num_of_instructions,
+                                            end_address,
+                                            buffering)
 
 # -----------------------------------------------------
 # File Formats
@@ -121,8 +316,10 @@ def print_symbols(symbols):
 # - PE and ELF are supported
 # We extract the following information from the 
 # executables formats:
+# - path
 # - entrypoint
-# - architecture
+# - arch
+# - relocations
 # - sections
 #   - name
 #   - address (offset from the start of the file)
@@ -142,12 +339,13 @@ from elftools.elf.sections import SymbolTableSection
 from elftools.elf.elffile import ELFFile
 
 
-def elf_extract_details(path):
+def elf_init(path):
     elf_details = {}
     try:
         with open(path, 'rb') as f:
             elf = ELFFile(f)
 
+            elf_details['path'] = path
             elf_details["entrypoint"] = elf.header.e_entry
             elf_details["arch"] = elf.header.e_machine
 
@@ -176,37 +374,121 @@ def elf_extract_details(path):
                         'name': symbol.name
                     })
 
-                # # only relocations are interesting for this one.
-                # if not isinstance(section, RelocationSection):
-                    # continue
+            elf_details["relocations"] = []
+            for section in elf.iter_sections():
+                # only relocations are interesting for this one.
+                if not isinstance(section, RelocationSection):
+                    continue
                 
-                # symbols_section = elf.get_section(section["sh_link"])
-                # for relocation in section.iter_relocations():
-                    # symbol = symbols_section.get_symbol(relocation["r_info_sym"])
-                    # symbol_address = relocation['r_offset']
-                    # symbol_address = symbol_address
+                symbols_section = elf.get_section(section["sh_link"])
+                for relocation in section.iter_relocations():
+                    symbol = symbols_section.get_symbol(relocation["r_info_sym"])
+                    address = relocation['r_offset']
 
-                    # # ignore symbols with no name for now...
-                    # if symbol.name == "":
-                        # continue
+                    # ignore symbols with no name for now...
+                    if symbol.name == "": continue
 
-                    # elf_details["symbols"].append({
-                        # 'address': symbol_address,
-                        # 'name': symbol.name
-                    # })
+                    elf_details["relocations"].append({
+                        'address': address,
+                        'name': symbol.name
+                    })
 
     except Exception as e:
         return None
 
+    create_plt_symbols(elf_details)
     return elf_details
 # -----------------------------------------------------
+
+def find_section(elf, name, exactly=True):
+    results = []
+    for section in elf['sections']:
+        if exactly:
+            if section['name'] != name: continue
+        else:
+            if name not in section['name']: continue
+        results.append(section)
+    return results
+
+def find_symbol_by_address(elf, address):
+    for symbol in elf['symbols']:
+        if symbol['address'] == address:
+            return symbol
+    return None
+
+def find_relocation_by_address(elf, address):
+    for relocation in elf['relocations']:
+        if relocation['address'] == address:
+            return relocation
+    return None
+
+def get_cross_refs(elf, address):
+    refs = []
+    for i in file_get_instructions(elf['path']):
+        if i['ref'] != address: continue
+        refs.append(i['address'])
+        
+    return refs
+
+# -----------------------------------------------------
+# NOTE
+# the .got table is where the linker is going to replace the content with the
+# imported and needed functions (and structures) from external sources. the plt
+# on the other hand is stay exatcly where it is and just point to the got
+# entries. This technique is used to make it easier and feasible for the linker
+# to replace all function calls in one place instead of all the places a
+# function is called from. 
+# With that out of the way, it is mandatory that we will be able to translate
+# calls to the plt table to the corresponding got entry. the got entries have
+# symbols attached to them in the symbols section of the elf, or in the case of
+# a functions pointers, the symbols are located in the relocations sections.
+# The relocations are the elf's way to tell the linker where to put the
+# functions in the got sections.
+# The plt entries (which are essentially jump tables) have no symbols. 
+# this is what we are fixing here. it is very helpful (mandatory even) to be
+# able to translate a jump to the plt - to the corresponding got symbol
+# instantaneously.
+# The translation is simple, we go to all plt sections in the elf, going
+# through all instructions there (it is code the jumps after all) and get the
+# addresses used to jump into the got section. now that we have the
+# corresponding got address, we can simply search the relevant symbol in the
+# relocations.
+# -----------------------------------------------------
+def create_plt_symbols(elf):
+    # search in all plt sections
+    plts = find_section(elf, '.plt', exactly=False)
+    if len(plts) == 0: return
+
+    got = find_section(elf, '.got')
+    if len(got) == 0: return
+    else: got = got[0]
+
+    got_start = got['address']
+    got_end = got_start + got['size']
+
+    for plt in plts:
+        plt_start = plt['address']
+        plt_end = plt_start + plt['size']
+        for i in file_get_instructions( elf['path'],
+                                        start_address=plt_start,
+                                        end_address=plt_end):
+            # skip if instruction does not trying to reference the got table
+            if not i['ref']: continue
+            if not (got_start <= i['ref'] <= got_end): continue
+
+            address = i['ref']
+            relocation = find_relocation_by_address(elf, address)
+            if not relocation: continue
+
+            name = f"plt@{relocation['name']}"
+            elf['symbols'].append({ 'name': name, 'address': address })
 
 # -----------------------------------------------------
 # PE
 # -----------------------------------------------------
 from pefile import PE
 
-def pe_extract_details(path):
+def pe_init(path):
     pe_details = {}
 
     try:
@@ -254,174 +536,6 @@ def pe_extract_details(path):
 
 # -----------------------------------------------------
 
-# -----------------------------------------------------
-# Language Analyzers
-# -----------------------------------------------------
-# - X86_64 assembly language
-# -----------------------------------------------------
-from base64 import b64encode, b64decode
-from capstone import *
-import re
-
-def x86_64_disassemble(code_as_bytes, start_address):
-    md = Cs(CS_ARCH_X86, CS_MODE_64)
-    
-    # Auto-skip errors in assembly
-    md.skipdata = True
-
-    try:
-        instructions = []
-        for i in md.disasm(code_as_bytes, start_address, 0):
-            instructions.append({
-                    'address': i.address,
-                    'mnemonic': i.mnemonic,
-                    'op_str': i.op_str,
-                    'bytes': str(b64encode(i.bytes)),
-                    'size': i.size
-                    })
-        return instructions
-    except Exception as e:
-        print("Exception: {}".format(e))
-        return None
-
-# file_get_instructions retrieving 1 instructions at a time
-def x86_64_file_get_instructions(   file_path, 
-                                    start_address=0, 
-                                    num_of_instructions=-1, 
-                                    end_address=-1, 
-                                    buffering=1024):
-    md = Cs(CS_ARCH_X86, CS_MODE_64)
-    
-    # Auto-skip errors in assembly
-    md.skipdata = True
-
-    current_address = start_address
-    num_of_passed_instructions = 0
-    is_finished = False
-    try:
-        at_a_time = 64 # buffering must be a multiplication of that.
-        data_from_last_iteration = None
-        for code_as_bytes in file_get_bytes(file_path, 
-                                            start_address=start_address,
-                                            end_address=end_address,
-                                            at_a_time=at_a_time,
-                                            buffering=buffering):
-            if data_from_last_iteration:
-                code_as_bytes = data_from_last_iteration + code_as_bytes
-                data_from_last_iteration = None
-
-            size_left = len(code_as_bytes)
-
-            for i in md.disasm(code_as_bytes, current_address, 0):
-                # only return the instruction in case the size of it
-                # did not reached the end of the buffer (make sure
-                # buffer didnt cut the instruction)
-                if size_left <= 15: # x86_64 instruction max length
-                    data_from_last_iteration = code_as_bytes[-size_left:]
-                    break
-
-                instruction = { 'address': i.address,
-                                'mnemonic': i.mnemonic,
-                                'op_str': i.op_str,
-                                'bytes': b64encode(i.bytes),
-                                'size': i.size}
-                yield instruction
-
-                num_of_passed_instructions += 1
-                if num_of_instructions != -1:
-                    if num_of_passed_instructions == num_of_instructions:
-                        is_finished = True
-                        break
-
-                # increase the address
-                current_address += i.size
-                size_left -= i.size
-
-            if is_finished: break
-
-    except Exception as e:
-        print("Exception: {}".format(e))
-        return None
-
-def x86_64_instruction_get_ref(instruction):
-    address = instruction['address']
-    mnemonic = instruction['mnemonic']
-    op_str = instruction['op_str']
-    size = instruction['size']
-    ref_address = None
-
-    # if call instruction follow call.
-    if mnemonic == 'call':
-        if re.match(r'0x[0-9A-Fa-f]+', op_str):
-            ref_address = op_str
-            ref_address = int(ref_address[0], 0)
-
-    # if lea instruction follow ref.
-    elif mnemonic == 'lea':
-        if re.match(r'.*rip \+ 0x[0-9A-Fa-f]+.*', op_str):
-            ref_address = re.findall(r'0x[0-9A-F]+', op_str, re.I)
-            if len(ref_address) != 1: return None
-            ref_address = int(ref_address[0], 0)
-
-            current_address = address
-            rip = current_address + size
-            ref_address = rip + ref_address
-
-    return ref_address
-
-def x86_64_analyze_function(file_path, start_address, level=0):
-    num_of_instructions = 0
-    num_of_nops = 0
-    num_of_wierd_nops = 0
-    is_ret = False
-    current_address = start_address
-
-    print(("\t"*level)+("-"*10))
-    for instruction in x86_64_file_get_instructions(    file_path, 
-                                                        num_of_instructions=-1,
-                                                        start_address=start_address,
-                                                        end_address=-1,
-                                                        buffering=1024):
-
-        print_instruction(instruction, level)
-        ref_address = x86_64_instruction_get_ref(instruction)
-        # if ref_address:
-            # x86_64_analyze_function(file_path, ref_address, level+1)
-
-        address = instruction['address']
-        mnemonic = instruction['mnemonic']
-        op_str = instruction['op_str']
-                
-        if mnemonic == 'nop': num_of_nops += 1
-        if mnemonic == 'nop' and op_str != '': num_of_wierd_nops += 1
-
-
-        num_of_instructions += 1
-        current_address += instruction["size"]
-        if mnemonic == 'ret': 
-            is_ret = True
-            break        
-
-        if num_of_instructions > 100:
-            break
-
-
-    print(("\t"*level)+("-"*10))
-
-# -----------------------------------------------------
-# Generic
-# -----------------------------------------------------
-def file_get_instructions(  file_path,
-                            start_address=0,
-                            num_of_instructions=-1,
-                            end_address=-1,
-                            buffering=1024):
-
-    return x86_64_file_get_instructions(    file_path,
-                                            start_address,
-                                            num_of_instructions,
-                                            end_address,
-                                            buffering)
 
 # -----------------------------------------------------
 from vimapp import Vimapp
@@ -486,7 +600,7 @@ def translate_address(addr):
 
 def init():
     global settings, elf
-    elf = elf_extract_details(settings['file_path'])
+    elf = elf_init(settings['file_path'])
 
 def exports():
     global settings, elf
@@ -498,13 +612,18 @@ def exports():
     # export functions
     vimable.export("init", init)
 
+    vimable.export("hexdump", hexdump)
     vimable.export("print_symbols", print_symbols)
+    vimable.export("print_relocations", print_relocations)
     vimable.export("print_sections", print_sections)
     vimable.export("print_instruction", print_instruction)
     vimable.export("print_instructions", print_instructions)
 
+    vimable.export("get_cross_refs", get_cross_refs)
+
     vimable.export("analyze_function", x86_64_analyze_function)
     vimable.export("file_get_instructions", file_get_instructions)
+    vimable.export("file_get_bytes", file_get_bytes)
 
 
 def main():
