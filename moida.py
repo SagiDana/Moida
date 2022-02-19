@@ -137,7 +137,7 @@ def main():
     global settings, binary, commands, completer
 
     try:
-        vimable.start("moi")
+        vimable.start("moida")
 
         init()
         exports()
@@ -159,7 +159,7 @@ def main():
         commands["disassemble"] = {}
         commands["disassemble"]["function"] = disassemble_function_handler
 
-        vapp = Vimapp("moi", commands, completer)
+        vapp = Vimapp("moida", commands, completer)
         vapp.run()
 
     finally:
